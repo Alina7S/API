@@ -1,0 +1,979 @@
+openapi: 3.1.0
+info:
+  title: API для записи на прием в стоматологию «Dental»
+  description: |
+    API для управления записями пациентов в стоматологическую клинику.
+    Реализует асинхронное создание записей, проверку доступности слотов и отмену.
+  version: 1.0.0
+servers:
+  - url: https://api.dental-clinic.com/v1
+
+paths:
+  /appointments:
+    get:
+      summary: Получить список записей пациента
+      description: |
+        Возвращает список записей авторизованного пациента.
+        Поддерживается пагинация. Записи сортируются по дате приема (от ближайших).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          description: Максимальное количество записей в ответе
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+        - name: offset
+          in: query
+          description: Смещение от начала списка
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: status
+          in: query
+          description: Фильтр по статусу записи
+          required: false
+          schema:
+            type: string
+            enum: [scheduled, completed, cancelled, confirmed]
+          example: scheduled
+      responses:
+        '200':
+          description: Список записей пациента
+          headers:
+            Cache-Control:
+              description: Запрет кэширования персональных данных
+              schema:
+                type: string
+              example: "no-store, max-age=0"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAppointmentsResponse'
+        '401':
+          description: Требуется авторизация
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/AuthError'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+
+    post:
+      summary: Создать новую запись на прием
+      description: |
+        Создаёт новую запись. Проверяет доступность выбранного слота,
+        врача и услуги. Требует подтверждения (асинхронный процесс).
+        Для обеспечения идемпотентности используется `Idempotency-Key`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Ключ для обеспечения идемпотентности запроса
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[a-zA-Z0-9_-]+$'
+          example: "req_12345abcde"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppointmentRequest'
+      responses:
+        '202':
+          description: |
+           Запрос на создание записи принят в обработку (асинхронно).
+    
+             Для отслеживания статуса:
+             1. Используйте полученный `statusUrl`
+             2. Выполните GET запрос с заголовком `Timeout`
+            3. Повторяйте запросы, пока не получите 200 с результатом 
+          headers:
+            Location:
+              description: URL для отслеживания статуса задачи
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentTaskResponse'
+        '400':
+          description: Неверные параметры запроса или слот недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '409':
+          description: Конфликт (например слот занят)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+
+  '/appointments/{appointmentId}':
+    parameters:
+      - name: appointmentId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^app_[a-zA-Z0-9_-]{1,64}$'
+        description: Уникальный идентификатор записи
+    get:
+      summary: Получить детали записи
+      description: Возвращает полную информацию о конкретной записи.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Детали записи
+          headers:
+            Cache-Control:
+              description: Запрет кэширования персональных данных
+              schema:
+                type: string
+              example: "no-store, max-age=0"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentResponse'
+        '404':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/NotFoundErrorResponse'
+    
+    patch:
+      summary: Изменить запись на прием
+      description: |
+        Частично обновляет существующую запись. Доступные изменения:
+        1. Заметки пациента
+        2. Статус записи 
+        3. Медицинские пометки (для врачей)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Ключ для обеспечения идемпотентности запроса
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[a-zA-Z0-9_-]+$'
+          example: "patch_req_abc123"
+        - name: If-Match
+          in: header
+          required: true
+          description: ETag 
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAppointmentRequest'
+      responses:
+        '200':
+          description: Запись успешно обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentResponse'
+          headers:
+            ETag:
+              description: Обновленной запись
+              schema:
+                type: string
+            Cache-Control:
+              description: Запрет кэширования персональных данных
+              schema:
+                type: string
+              example: "no-store, max-age=0"
+        '400':
+          description: Некорректный запрос или попытка изменить неизменяемые поля
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '404':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/NotFoundErrorResponse'
+        '409':
+          description: Конфликт
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '412':
+          description: Условие If-Match не выполнено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+    
+    delete:
+      summary: Отменить запись
+      description: |
+        Отменяет запись на прием. Для обеспечения идемпотентности используется `Idempotency-Key`.
+        Отмена возможна для записей в статусах 'scheduled' и 'confirmed'.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[a-zA-Z0-9_-]+$'
+        - name: If-Match
+          in: header
+          required: true
+          description: ETag 
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Запрос на отмену принят в обработку
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentTaskResponse'
+        '404':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/NotFoundErrorResponse'
+        '409':
+          description: Запись заблокирована или находится в статусе, не позволяющем отмену
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '412':
+          description: Условие If-Match не выполнено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+
+  '/appointments/{appointmentId}/reschedule':
+    post:
+      summary: Перенести запись на другое время
+      description: |
+        Переносит запись на новое время.
+        Это асинхронная операция, которая проверяет доступность нового слота отменяет старый и создает новую запись.
+        Требует подтверждения от пациента/администратора.
+      security:
+        - bearerAuth: []
+      parameters:        
+        - name: appointmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^app_[a-zA-Z0-9_-]{1,64}$'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[a-zA-Z0-9_-]+$'
+        - name: If-Match
+          in: header
+          required: true
+          description: ETag 
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RescheduleAppointmentRequest'
+      responses:
+        '202':
+          description: Запрос на перенос принят в обработку
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentTaskResponse'
+        '400':
+          description: Новый слот недоступен или невалидные параметры
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '404':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/NotFoundErrorResponse'
+        '409':
+          description: Запись нельзя перенести
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '412':
+          description: ETag не совпадает
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+
+  '/status/{taskId}':
+    get:
+      summary: Получить статус асинхронной задачи
+      description: |
+        Long-polling эндпоинт для отслеживания статуса асинхронной задачи
+        (создание, отмена или перенос записи). 
+        Поддерживается заголовок `Timeout` для указания времени ожидания.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^task_[a-zA-Z0-9_-]{1,64}$'
+          description: Идентификатор задачи
+        - name: Timeout
+          in: header
+          required: false
+          description: Ожидание ответа от сервера в секундах (long-polling)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 30
+            default: 10
+      responses:
+        '200':
+          description: Задача завершена успешно
+          headers:
+            Cache-Control:
+              description: Запрет кэширования персональных данных
+              schema:
+                type: string
+              example: "no-store, max-age=0"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskStatusResponse'
+        '202':
+          description: Задача все еще выполняется
+        '404':
+          description: Некорректный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/NotFoundErrorResponse'
+        '408':
+          description: Превышено время ожидания (таймаут long-polling)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeoutError'
+        '429':
+          description: Превышен лимит запросов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+  /slots:
+    get:
+      summary: Получить доступные слоты для записи
+      description: |
+        Возвращает список свободных слотов у выбранного врача или всех врачей в указанный период. Учитывает график работы и уже занятые записи.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: dentistId
+          in: query
+          description: Идентификатор врача (если не указан, возвращаются слоты всех врачей)
+          required: false
+          schema:
+            type: string
+            pattern: '^dent_[a-zA-Z0-9_-]{1,64}$'
+        - name: serviceId
+          in: query
+          required: true
+          description: Идентификатор услуги 
+          schema:
+            type: string
+            pattern: '^svc_[a-zA-Z0-9_-]{1,50}$'
+        - name: dateFrom
+          in: query
+          required: true
+          description: Начало периода поиска (включительно)
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          required: true
+          description: Конец периода поиска (включительно)
+          schema:
+            type: string
+            format: date
+            maxLength: 10
+      responses:
+        '200':
+          description: Список доступных слотов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilitySlotsResponse'
+        '400':
+          description: Новый слот недоступен или невалидные параметры
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Токен доступа пациента, после аутентификации
+  schemas:
+    Appointment:
+      type: object
+      properties:
+        id:
+          type: string
+          pattern: '^app_[a-zA-Z0-9_-]{1,64}$'
+          description: Уникальный идентификатор записи
+          example: "app_5fK9pL2q"
+        dentistId:
+          type: string
+          description: Идентификатор врача
+          example: "dent_aj85Hgb2"
+        dentistName:
+          type: string
+          description: ФИО врача
+          example: "Иванова Иван Иванович"
+        serviceId:
+          type: string
+          description: Идентификатор услуги
+          example: "s_consultation"
+        serviceName:
+          type: string
+          description: Название услуги
+          example: "Консультация"
+        startTime:
+          type: string
+          format: date-time
+          description: Дата и время начала приема 
+          example: "2024-12-15T14:30:00Z"
+        endTime:
+          type: string
+          format: date-time
+          description: Дата и время окончания приема 
+          example: "2024-12-15T15:30:00Z"
+        status:
+          type: string
+          enum: [scheduled, confirmed, in_progress, completed, cancelled, no_show]
+          description: Статус записи
+          example: "scheduled"
+        price:
+          type: number
+          format: float
+          minimum: 0
+          description: Стоимость услуги в рублях
+          example: 4500.0
+        patientNotes:
+          type: string
+          maxLength: 1000
+          description: Заметки пациента (жалобы, пожелания)
+          nullable: true
+          example: "Чувствительность зубов, аллергия на препарат"
+        medicalNotes:
+          type: string
+          maxLength: 2000
+          description: Пометки врача 
+          nullable: true
+          example: "Рекомендована профессиональная гигиена полости рта"
+        _links:
+          type: array
+          description: Список доступных действий
+          items:
+            type: object
+            properties:
+              rel:
+                type: string
+                description: Тип связи
+                enum: [self, update, cancel, reschedule, confirm]
+                example: "self"
+              method:
+                type: string
+                enum: [GET, POST, PATCH, DELETE]
+              href:
+                type: string
+                format: uri
+              description:
+                type: string
+            required: [rel, method, href]
+          example:
+            - rel: self
+              method: GET
+              href: "/appointments/abc_5fK9pL2q"
+              description: "Получить детали записи"
+            - rel: update
+              method: PATCH
+              href: "/appointments/abc_5fK9pL2q"
+              description: "Изменить запись"
+            - rel: cancel
+              method: DELETE
+              href: "/appointments/abc_5fK9pL2q"
+              description: "Отменить запись"
+            - rel: reschedule
+              method: POST
+              href: "/appointments/abc_5fK9pL2q/reschedule"
+              description: "Перенести запись"
+            - rel: confirm
+              method: PATCH
+              href: "/appointments/abc_5fK9pL2q"
+              description: "Подтвердить запись"
+      required: [id, dentistId, dentistName, serviceId, serviceName, startTime, endTime, status, price, _links]
+      additionalProperties: false
+
+    CreateAppointmentRequest:
+      type: object
+      properties:
+        dentistId:
+          type: string
+          pattern: '^dent_[a-zA-Z0-9_-]{1,64}$'
+          description: Идентификатор выбранного врача
+          example: "dent_aj85Hgb2"
+        serviceId:
+          type: string
+          pattern: '^svc_[a-zA-Z0-9_-]{1,50}$'
+          description: Идентификатор услуги
+          example: "s_whitening"
+        slotStart:
+          type: string
+          format: date-time
+          description: Дата и время начала желаемого слота (должен соответствовать доступному слоту)
+          example: "2024-12-20T10:00:00Z"
+        patientNotes:
+          type: string
+          maxLength: 1000
+          description: Дополнительные комментарии от пациента
+          example: "Чувствительность на холодное"
+      required: [dentistId, serviceId, slotStart]
+      additionalProperties: false
+
+    UpdateAppointmentRequest:
+      type: object
+      description: |
+        Запрос на частичное обновление записи.
+        Нельзя изменять: dentistId, serviceId, startTime, endTime, price.
+        Для изменения времени - эндпоинт reschedule.
+      properties:
+        patientNotes:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: Новые или обновленные заметки пациента
+          example: "Добавилась аллергия на препарат"
+        status:
+          type: string
+          enum: [confirmed] 
+          description: |
+            Можно использовать только для подтверждения записи.
+            Другие статусы устанавливаются автоматически системой.
+          example: "confirmed"
+        medicalNotes:
+          type: string
+          maxLength: 2000
+          nullable: true
+          description: Медицинские заметки
+          example: "Пациенту рекомендован рентген"
+      minProperties: 1
+      anyOf:
+        - required: [patientNotes]
+        - required: [status]
+        - required: [medicalNotes]
+      additionalProperties: false
+
+    RescheduleAppointmentRequest:
+      type: object
+      properties:
+        newSlotStart:
+          type: string
+          format: date-time
+          description: Дата и время нового слота (должен быть доступен)
+          example: "2024-12-21T11:00:00Z"
+        reason:
+          type: string
+          maxLength: 500
+          description: Причина переноса
+          example: "Другая причина"
+      required: [newSlotStart]
+      additionalProperties: false
+
+    AppointmentResponse:
+      allOf:
+        - $ref: '#/components/schemas/Appointment'
+        - type: object
+          properties:
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+            _etag:
+              type: string
+              description: If-Match
+              example: "\"v1.0abc123\""
+            _version:
+              type: integer
+              description: Номер версии записи
+              minimum: 1
+              example: 3
+          required: [createdAt, updatedAt, _etag, _version]
+
+    PaginatedAppointmentsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          description: Список записей на текущей странице
+          items:
+            $ref: '#/components/schemas/Appointment'
+        total:
+          type: integer
+          minimum: 0
+          description: Общее количество записей
+          example: 5
+        limit:
+          type: integer
+          description: Запрошенный лимит
+          example: 10
+        offset:
+          type: integer
+          description: Текущее смещение
+          example: 0
+        _links:
+          type: object
+          description: Ссылки для навигации
+          properties:
+            self:
+              type: string
+              format: uri
+            next:
+              type: string
+              format: uri
+              nullable: true
+            prev:
+              type: string
+              format: uri
+              nullable: true
+      required: [items, total, limit, offset, _links]
+      additionalProperties: false
+
+    AvailabilitySlot:
+      type: object
+      properties:
+        dentistId:
+          type: string
+          example: "dent_aj85Hgb2"
+        dentistName:
+          type: string
+          example: "Иванов Иван Иванович"
+        startTime:
+          type: string
+          format: date-time
+          example: "2024-12-20T10:00:00Z"
+        endTime:
+          type: string
+          format: date-time
+          example: "2024-12-20T11:00:00Z"
+        available:
+          type: boolean
+          description: Доступен ли слот на момент запроса
+          example: true
+        serviceId:
+          type: string
+          description: Услуга, для которой доступен слот
+          example: "s_consultation"
+      required: [dentistId, dentistName, startTime, endTime, available]
+      additionalProperties: false
+
+    AvailabilitySlotsResponse:
+      type: object
+      properties:
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailabilitySlot'
+        _links:
+          type: object
+          properties:
+            self:
+              type: string
+              format: uri
+          required: [self]
+      required: [slots, _links]
+      additionalProperties: false
+
+    AppointmentTaskResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+          pattern: '^task_[a-zA-Z0-9_-]{1,64}$'
+          description: Идентификатор асинхронной задачи
+          example: "task_8kL3mN9p"
+        statusUrl:
+          type: string
+          format: uri
+          description: URL для отслеживания статуса задачи
+          example: "/appointments/tasks/task_8kL3mN9p"
+      required: [taskId, statusUrl]
+      additionalProperties: false
+
+    TaskStatusResponse:
+      type: object
+      properties:
+        taskId:
+          type: string
+        status:
+          type: string
+          enum: [processing, success, failed, cancelled]
+          description: Cтатус задачи
+        result:
+          type: object
+          nullable: true
+          description: Результат выполнения (например, созданная запись)
+          properties:
+            appointmentId:
+              type: string
+              example: "app_newId123"
+            action:
+              type: string
+              enum: [created, cancelled, updated, rescheduled]
+        error:
+          type: object
+          nullable: true
+          description: Информация об ошибке, если status=failed
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            retryable:
+              type: boolean
+              description: Можно ли повторить запрос
+      required: [taskId, status]
+      additionalProperties: false
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Код ошибки (машинно-читаемый)
+          example: "slot_unavailable"
+        message:
+          type: string
+          description: Человекочитаемое описание
+          example: "Выбранное время больше не доступно"
+        details:
+          type: object
+          nullable: true
+          description: Дополнительная информация
+        _links:
+          type: array
+          description: Ссылки для исправления ошибки или получения помощи
+          items:
+            type: object
+            properties:
+              rel:
+                type: string
+                enum: [help, docs, retry, prev]
+              href:
+                type: string
+                format: uri
+              description:
+                type: string
+      required: [error, message]
+      additionalProperties: false
+
+    ValidationError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            error:
+              example: "validation_error"
+            message:
+              example: "Ошибка валидации данных"
+            validationErrors:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+                  code:
+                    type: string
+                    enum: [required, invalid_format, immutable_field]
+
+    ConflictError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            error:
+              example: "resource_locked"
+            message:
+              example: "Запись в данный момент заблокирована для изменений"
+            resourceVersion:
+              type: string
+              description: Текущая версия ресурса 
+            retryAfter:
+              type: integer
+              description: Время через которое можно повторить запрос
+
+    TimeoutError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            error:
+              example: "long_polling_timeout"
+            message:
+              example: "Время ожидания истекло. Повторите запрос позже"
+
+    NotFoundError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            error:
+              example: "not_found"
+            message:
+              example: "Запись или задача не найдена"
+
+    TooManyRequestsError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            error:
+              example: "rate_limit_exceeded"
+            message:
+              example: "Слишком много запросов"
+            retryAfter:
+              type: integer
+              description: Время в секундах, через которое можно повторить запрос
+              example: 30
+            limit:
+              type: integer
+              description: Лимит запросов в интервал времени
+            remaining:
+              type: integer
+              description: Оставшееся количество запросов
+            resetTime:
+              type: string
+              format: date-time
+              description: Время сброса счетчика
+
+  responses:
+    AuthError:
+      description: Требуется авторизация
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+            example:
+              error: "unauthorized"
+              message: "Необходима аутентификация"
+              _links:
+                - rel: "help"
+                  href: "/docs/auth"
+                  description: "Подсказка по аутентификации"
+
+    NotFoundErrorResponse:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NotFoundError'
+
+    TooManyRequestsErrorResponse:
+      description: Превышен лимит запросов
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TooManyRequestsError'
+
+    ValidationErrorResponse:
+      description: Ошибка валидации данных
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
