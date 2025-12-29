@@ -56,18 +56,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedAppointmentsResponse'
-        '401':
-          description: Требуется авторизация
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/responses/AuthError'
         '429':
           description: Превышен лимит запросов
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+                $ref: '#/components/schemas/TooManyRequestsError'
+        '400':
+          description: Неверные параметры запроса (недопустимый статус)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
 
     post:
       summary: Создать новую запись на прием
@@ -130,7 +130,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+                $ref: '#/components/schemas/TooManyRequestsError'
 
   '/appointments/{appointmentId}':
     parameters:
@@ -155,16 +155,21 @@ paths:
               schema:
                 type: string
               example: "no-store, max-age=0"
+            ETag:
+              description: ETag 
+              schema:
+                type: string
+              example: '"v1.0abc1733454"'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AppointmentResponse'
         '404':
-          description: Некорректный запрос
+          description: Некорректный запрос, запись не найдена
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/NotFoundErrorResponse'
+                $ref: '#/components/schemas/NotFoundError'
     
     patch:
       summary: Изменить запись на прием
@@ -176,16 +181,6 @@ paths:
       security:
         - bearerAuth: []
       parameters:
-        - name: Idempotency-Key
-          in: header
-          required: true
-          description: Ключ для обеспечения идемпотентности запроса
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 64
-            pattern: '^[a-zA-Z0-9_-]+$'
-          example: "patch_req_abc123"
         - name: If-Match
           in: header
           required: true
@@ -226,7 +221,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/NotFoundErrorResponse'
+                $ref: '#/components/schemas/NotFoundError'
         '409':
           description: Конфликт
           content:
@@ -244,24 +239,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+                $ref: '#/components/schemas/TooManyRequestsError'
     
     delete:
       summary: Отменить запись
       description: |
-        Отменяет запись на прием. Для обеспечения идемпотентности используется `Idempotency-Key`.
+        Отменяет запись на прием.
         Отмена возможна для записей в статусах 'scheduled' и 'confirmed'.
       security:
         - bearerAuth: []
       parameters:
-        - name: Idempotency-Key
-          in: header
-          required: true
-          schema:
-            type: string
-            minLength: 1
-            maxLength: 64
-            pattern: '^[a-zA-Z0-9_-]+$'
         - name: If-Match
           in: header
           required: true
@@ -285,7 +272,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/NotFoundErrorResponse'
+                $ref: '#/components/schemas/NotFoundError'
         '409':
           description: Запись заблокирована или находится в статусе, не позволяющем отмену
           content:
@@ -303,7 +290,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/TooManyRequestsErrorResponse'
+                $ref: '#/components/schemas/TooManyRequestsError'
 
   '/appointments/{appointmentId}/reschedule':
     post:
@@ -329,12 +316,6 @@ paths:
             minLength: 1
             maxLength: 64
             pattern: '^[a-zA-Z0-9_-]+$'
-        - name: If-Match
-          in: header
-          required: true
-          description: ETag 
-          schema:
-            type: string
       requestBody:
         required: true
         content:
@@ -358,13 +339,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ValidationError'
+                $ref: '#/components/schemas/ValidationError' 
         '404':
           description: Некорректный запрос
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/NotFoundErrorResponse'
+                $ref: '#/components/schemas/NotFoundError'
         '409':
           description: Запись нельзя перенести
           content:
@@ -378,7 +359,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConflictError'
 
-  '/status/{taskId}':
+  '/appointments/tasks/{taskId}':
     get:
       summary: Получить статус асинхронной задачи
       description: |
@@ -417,14 +398,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TaskStatusResponse'
-        '202':
-          description: Задача все еще выполняется
-        '404':
-          description: Некорректный запрос
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/responses/NotFoundErrorResponse'
         '408':
           description: Превышено время ожидания (таймаут long-polling)
           content:
@@ -436,8 +409,8 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/responses/TooManyRequestsErrorResponse'
-  /slots:
+                $ref: '#/components/schemas/TooManyRequestsError'
+  '/appointments/slots':
     get:
       summary: Получить доступные слоты для записи
       description: |
@@ -482,7 +455,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AvailabilitySlotsResponse'
         '400':
-          description: Новый слот недоступен или невалидные параметры
+          description: Неверные параметры запроса
           content:
             application/json:
               schema:
@@ -833,30 +806,16 @@ components:
       properties:
         error:
           type: string
-          description: Код ошибки (машинно-читаемый)
+          description: Код ошибки
           example: "slot_unavailable"
         message:
           type: string
           description: Человекочитаемое описание
-          example: "Выбранное время больше не доступно"
+          example: "Выбранное время не доступно"
         details:
           type: object
           nullable: true
           description: Дополнительная информация
-        _links:
-          type: array
-          description: Ссылки для исправления ошибки или получения помощи
-          items:
-            type: object
-            properties:
-              rel:
-                type: string
-                enum: [help, docs, retry, prev]
-              href:
-                type: string
-                format: uri
-              description:
-                type: string
       required: [error, message]
       additionalProperties: false
 
@@ -865,12 +824,9 @@ components:
         - $ref: '#/components/schemas/Error'
         - type: object
           properties:
-            error:
-              example: "validation_error"
-            message:
-              example: "Ошибка валидации данных"
             validationErrors:
               type: array
+              description: Список ошибок валидации
               items:
                 type: object
                 properties:
@@ -881,19 +837,14 @@ components:
                   code:
                     type: string
                     enum: [required, invalid_format, immutable_field]
-
     ConflictError:
       allOf:
         - $ref: '#/components/schemas/Error'
         - type: object
           properties:
-            error:
-              example: "resource_locked"
-            message:
-              example: "Запись в данный момент заблокирована для изменений"
             resourceVersion:
               type: string
-              description: Текущая версия ресурса 
+              description: Версия ресурса
             retryAfter:
               type: integer
               description: Время через которое можно повторить запрос
@@ -902,38 +853,23 @@ components:
       allOf:
         - $ref: '#/components/schemas/Error'
         - type: object
-          properties:
-            error:
-              example: "long_polling_timeout"
-            message:
-              example: "Время ожидания истекло. Повторите запрос позже"
 
     NotFoundError:
       allOf:
         - $ref: '#/components/schemas/Error'
         - type: object
-          properties:
-            error:
-              example: "not_found"
-            message:
-              example: "Запись или задача не найдена"
 
     TooManyRequestsError:
       allOf:
         - $ref: '#/components/schemas/Error'
         - type: object
           properties:
-            error:
-              example: "rate_limit_exceeded"
-            message:
-              example: "Слишком много запросов"
             retryAfter:
               type: integer
               description: Время в секундах, через которое можно повторить запрос
-              example: 30
             limit:
               type: integer
-              description: Лимит запросов в интервал времени
+              description: Лимит запросов 
             remaining:
               type: integer
               description: Оставшееся количество запросов
@@ -942,38 +878,3 @@ components:
               format: date-time
               description: Время сброса счетчика
 
-  responses:
-    AuthError:
-      description: Требуется авторизация
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-            example:
-              error: "unauthorized"
-              message: "Необходима аутентификация"
-              _links:
-                - rel: "help"
-                  href: "/docs/auth"
-                  description: "Подсказка по аутентификации"
-
-    NotFoundErrorResponse:
-      description: Ресурс не найден
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/NotFoundError'
-
-    TooManyRequestsErrorResponse:
-      description: Превышен лимит запросов
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/TooManyRequestsError'
-
-    ValidationErrorResponse:
-      description: Ошибка валидации данных
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ValidationError'
