@@ -68,6 +68,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidationError'
+        '404':
+          description: Страница не найдена (смещение превышает общее количество записей)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
 
     post:
       summary: Создать новую запись на прием
@@ -101,8 +107,8 @@ paths:
     
              Для отслеживания статуса:
              1. Используйте полученный `statusUrl`
-             2. Выполните GET запрос с заголовком `Timeout`
-            3. Повторяйте запросы, пока не получите 200 с результатом 
+             2. Выполните GET запрос с с фиксированным таймаутом 10 секунд
+             3. Повторяйте запросы, пока не получите 200 с результатом 
           headers:
             Location:
               description: URL для отслеживания статуса задачи
@@ -249,12 +255,6 @@ paths:
       security:
         - bearerAuth: []
       parameters:
-        - name: If-Match
-          in: header
-          required: true
-          description: ETag 
-          schema:
-            type: string
       responses:
         '202':
           description: Запрос на отмену принят в обработку
@@ -376,15 +376,6 @@ paths:
             type: string
             pattern: '^task_[a-zA-Z0-9_-]{1,64}$'
           description: Идентификатор задачи
-        - name: Timeout
-          in: header
-          required: false
-          description: Ожидание ответа от сервера в секундах (long-polling)
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 30
-            default: 10
       responses:
         '200':
           description: Задача завершена успешно
@@ -399,7 +390,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TaskStatusResponse'
         '408':
-          description: Превышено время ожидания (таймаут long-polling)
+          description: Превышено время ожидания (10 секунд)
           content:
             application/json:
               schema:
@@ -801,80 +792,75 @@ components:
       required: [taskId, status]
       additionalProperties: false
 
-    Error:
+    ValidationError:
+      allOf:
+        - type: object
+          properties:
+            error:
+              type: string
+              description: Код ошибки (машинно-читаемый)
+              example: "validation_error"
+            message:
+              type: string
+              description: Человекочитаемое описание ошибки
+              example: "Ошибка валидации данных"
+          required: [error, message]
+          additionalProperties: false
+
+    ConflictError:
+      allOf:
+        - type: object
+          properties:
+            error:
+              type: string
+              description: Код ошибки (машинно-читаемый)
+              example: "cart_locked"
+            message:
+              type: string
+              description: Человекочитаемое описание ошибки
+              example: "Корзина заблокирована для изменений"
+          required: [error, message]
+          additionalProperties: false
+    TimeoutError:
       type: object
       properties:
         error:
           type: string
-          description: Код ошибки
-          example: "slot_unavailable"
+          description: Код ошибки (машинно-читаемый)
+          example: "timeout"
         message:
           type: string
-          description: Человекочитаемое описание
-          example: "Выбранное время не доступно"
-        details:
-          type: object
-          nullable: true
-          description: Дополнительная информация
+          description: Человекочитаемое описание ошибки
+          example: "Превышено время ожидания операции"
       required: [error, message]
       additionalProperties: false
 
-    ValidationError:
-      allOf:
-        - $ref: '#/components/schemas/Error'
-        - type: object
-          properties:
-            validationErrors:
-              type: array
-              description: Список ошибок валидации
-              items:
-                type: object
-                properties:
-                  field:
-                    type: string
-                  message:
-                    type: string
-                  code:
-                    type: string
-                    enum: [required, invalid_format, immutable_field]
-    ConflictError:
-      allOf:
-        - $ref: '#/components/schemas/Error'
-        - type: object
-          properties:
-            resourceVersion:
-              type: string
-              description: Версия ресурса
-            retryAfter:
-              type: integer
-              description: Время через которое можно повторить запрос
-
-    TimeoutError:
-      allOf:
-        - $ref: '#/components/schemas/Error'
-        - type: object
-
     NotFoundError:
-      allOf:
-        - $ref: '#/components/schemas/Error'
-        - type: object
+      type: object
+      properties:
+        error:
+          type: string
+          description: Код ошибки (машинно-читаемый)
+          example: "not_found"
+        message:
+          type: string
+          description: Человекочитаемое описание ошибки
+          example: "Корзина или позиция не найдена"
+      required: [error, message]
+      additionalProperties: false
 
     TooManyRequestsError:
-      allOf:
-        - $ref: '#/components/schemas/Error'
-        - type: object
-          properties:
-            retryAfter:
-              type: integer
-              description: Время в секундах, через которое можно повторить запрос
-            limit:
-              type: integer
-              description: Лимит запросов 
-            remaining:
-              type: integer
-              description: Оставшееся количество запросов
-            resetTime:
-              type: string
-              format: date-time
-              description: Время сброса счетчика
+      type: object
+      properties:
+        error:
+          type: string
+          description: Код ошибки (машинно-читаемый)
+          example: "too_many_requests"
+        message:
+          type: string
+          description: Человекочитаемое описание ошибки
+          example: "Превышен лимит запросов"
+      required: [error, message]
+      additionalProperties: false
+
 
